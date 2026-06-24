@@ -1,0 +1,6 @@
+pds4_tools
+requests
+numpy
+scipy
+h5py
+xarray
