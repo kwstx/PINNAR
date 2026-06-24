@@ -39,7 +39,7 @@ def objective(trial, val_data, endmember_ssas, num_bands, num_endmembers):
     # Short training loop to see if the loss converges well
     for step in range(5):
         optimizer.zero_grad()
-        abundances, ssa, log_var = model(x)
+        abundances, ssa, log_var, abundance_log_var = model(x)
         
         # In a real scenario, predicted_reflectance would be computed
         # For this demonstration, we mock predicted_reflectance with model output transformations
@@ -69,7 +69,7 @@ def objective(trial, val_data, endmember_ssas, num_bands, num_endmembers):
     model.eval()
     loss_fn.eval()
     with torch.no_grad():
-        abundances, ssa, log_var = model(x)
+        abundances, ssa, log_var, abundance_log_var = model(x)
         
         predicted_reflectance = ssa.mean(dim=(-1, -2))
         observed_reflectance = y_true.mean(dim=(-1, -2))

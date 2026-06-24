@@ -14,11 +14,13 @@ def test_hybrid_model():
     x = torch.rand(batch_size, num_bands, patch_size, patch_size)
     
     # Forward pass
-    abundances, ssa = model(x)
+    abundances, ssa, log_var, abundance_log_var = model(x)
     
     # Assert correct shapes
     assert abundances.shape == (batch_size, num_endmembers, patch_size, patch_size), f"Expected abundances shape (4, 5, 32, 32), got {abundances.shape}"
     assert ssa.shape == (batch_size, num_bands, patch_size, patch_size), f"Expected ssa shape (4, 200, 32, 32), got {ssa.shape}"
+    assert log_var.shape == (batch_size, 1, patch_size, patch_size), f"Expected log_var shape (4, 1, 32, 32), got {log_var.shape}"
+    assert abundance_log_var.shape == (batch_size, num_endmembers, patch_size, patch_size), f"Expected abundance_log_var shape (4, 5, 32, 32), got {abundance_log_var.shape}"
     
     # Check physical constraints
     # Abundances sum to 1 over the endmember dimension

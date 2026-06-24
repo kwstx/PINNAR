@@ -22,6 +22,7 @@ def test_composite_loss_forward():
     predicted_abundances = predicted_abundances / predicted_abundances.sum(dim=1, keepdim=True)
     
     log_var = torch.randn(B, 1, H, W)
+    abundance_log_var = torch.randn(B, N_endmembers, H, W)
     
     mu0 = torch.rand(B)
     mu = torch.rand(B)
@@ -30,16 +31,24 @@ def test_composite_loss_forward():
     # Mask labeled (e.g. half the pixels labeled)
     mask_labeled = torch.randint(0, 2, (B, H, W), dtype=torch.bool)
     
+    # Abundances labels for a subset
+    observed_abundances = torch.rand(B, N_endmembers, H, W)
+    observed_abundances = observed_abundances / observed_abundances.sum(dim=1, keepdim=True)
+    mask_abundances = torch.randint(0, 2, (B, H, W), dtype=torch.bool)
+    
     # Forward pass
     total_loss, loss_dict = loss_fn(
         predicted_reflectance,
         observed_reflectance,
         predicted_abundances,
         log_var,
+        abundance_log_var,
         mu0,
         mu,
         phase_angle,
-        mask_labeled=mask_labeled
+        mask_labeled=mask_labeled,
+        observed_abundances=observed_abundances,
+        mask_abundances=mask_abundances
     )
 
     assert total_loss.ndim == 0, "Total loss should be a scalar"
