@@ -123,6 +123,8 @@ class PhysicsInformedHead(nn.Module):
         super().__init__()
         self.abundance_conv = nn.Conv2d(in_channels, num_endmembers, kernel_size=1)
         self.ssa_conv = nn.Conv2d(in_channels, num_bands, kernel_size=1)
+        # Output log-variance for predictive uncertainty estimation
+        self.log_var_conv = nn.Conv2d(in_channels, 1, kernel_size=1)
         
     def forward(self, x):
         abundances = self.abundance_conv(x)
@@ -132,7 +134,10 @@ class PhysicsInformedHead(nn.Module):
         # Predict SSA (bounded between 0 and 1)
         ssa = torch.sigmoid(self.ssa_conv(x))
         
-        return abundances, ssa
+        # Predict log variance
+        log_var = self.log_var_conv(x)
+        
+        return abundances, ssa, log_var
 
 
 class HybridSpectralSpatialModel(nn.Module):
@@ -141,7 +146,7 @@ class HybridSpectralSpatialModel(nn.Module):
     
     - Spectral Encoder: Fully connected layers with Fourier feature mapping
     - Spatial Branch: Lightweight U-Net-style on 32x32 patches
-    - Output: Predicts abundance fractions (softmax constrained) and effective SSA
+    - Output: Predicts abundance fractions (softmax constrained), effective SSA, and predictive log-variance
     """
     def __init__(self, num_bands, num_endmembers, spec_latent_dim=64, spat_latent_dim=32, fourier_freqs=4):
         super().__init__()
@@ -165,6 +170,7 @@ class HybridSpectralSpatialModel(nn.Module):
         Returns:
             abundances: (B, num_endmembers, 32, 32)
             ssa: (B, num_bands, 32, 32) - effective single-scattering albedo
+            log_var: (B, 1, 32, 32) - predictive log-variance for uncertainty
         """
         # Process through Spectral Branch (pixel-wise processing of Fourier features)
         spec_features = self.spectral_encoder(x)
@@ -177,6 +183,6 @@ class HybridSpectralSpatialModel(nn.Module):
         fused = self.fusion_conv(fused)
         
         # Physics-informed output
-        abundances, ssa = self.output_head(fused)
+        abundances, ssa, log_var = self.output_head(fused)
         
-        return abundances, ssa
+        return abundances, ssa, log_var
