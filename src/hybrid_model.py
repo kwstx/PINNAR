@@ -2,6 +2,55 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class GradientReversalFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+        return x.view_as(x)
+        
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+        return output, None
+
+class GradientReversalLayer(nn.Module):
+    def __init__(self, alpha=1.0):
+        super().__init__()
+        self.alpha = alpha
+        
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.alpha)
+
+class DomainDiscriminator(nn.Module):
+    def __init__(self, in_channels, num_domains=3):
+        super().__init__()
+        self.grl = GradientReversalLayer()
+        self.net = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_channels, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, num_domains)
+        )
+        
+    def forward(self, x):
+        x = self.grl(x)
+        return self.net(x)
+
+class SuperResolutionBranch(nn.Module):
+    def __init__(self, in_channels, num_endmembers, num_bands, upscale_factor=2):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, in_channels * (upscale_factor ** 2), kernel_size=3, padding=1)
+        self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
+        
+        self.hr_head = PhysicsInformedHead(in_channels, num_endmembers, num_bands)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.pixel_shuffle(x)
+        hr_abundances, hr_ssa, hr_log_var, hr_abundance_log_var = self.hr_head(x)
+        return hr_abundances, hr_ssa, hr_log_var, hr_abundance_log_var
+
 class FourierFeatureMapping(nn.Module):
     """
     Applies sinusoidal positional encodings at multiple frequencies 
@@ -150,8 +199,10 @@ class HybridSpectralSpatialModel(nn.Module):
     - Spectral Encoder: Fully connected layers with Fourier feature mapping
     - Spatial Branch: Lightweight U-Net-style on 32x32 patches
     - Output: Predicts abundance fractions (softmax constrained), effective SSA, and predictive log-variance
+    - Domain Adaptation: Uses GRL to align feature distributions across instruments.
+    - Super Resolution: Sub-pixel convolutional branch for spatial upscaling.
     """
-    def __init__(self, num_bands, num_endmembers, spec_latent_dim=64, spat_latent_dim=32, fourier_freqs=4):
+    def __init__(self, num_bands, num_endmembers, spec_latent_dim=64, spat_latent_dim=32, fourier_freqs=4, num_domains=3, upscale_factor=2):
         super().__init__()
         
         self.spectral_encoder = SpectralEncoder(num_bands, spec_latent_dim, fourier_freqs)
@@ -166,6 +217,8 @@ class HybridSpectralSpatialModel(nn.Module):
         )
         
         self.output_head = PhysicsInformedHead(128, num_endmembers, num_bands)
+        self.domain_discriminator = DomainDiscriminator(128, num_domains)
+        self.super_res_branch = SuperResolutionBranch(128, num_endmembers, num_bands, upscale_factor)
         
     def forward(self, x):
         """
@@ -175,6 +228,9 @@ class HybridSpectralSpatialModel(nn.Module):
             ssa: (B, num_bands, 32, 32) - effective single-scattering albedo
             log_var: (B, 1, 32, 32) - predictive log-variance for reflectance uncertainty
             abundance_log_var: (B, num_endmembers, 32, 32) - aleatoric uncertainty for abundances
+            domain_logits: (B, num_domains) - logits for domain classification
+            hr_abundances: (B, num_endmembers, 32*upscale, 32*upscale)
+            hr_ssa: (B, num_bands, 32*upscale, 32*upscale)
         """
         # Process through Spectral Branch (pixel-wise processing of Fourier features)
         spec_features = self.spectral_encoder(x)
@@ -189,4 +245,10 @@ class HybridSpectralSpatialModel(nn.Module):
         # Physics-informed output
         abundances, ssa, log_var, abundance_log_var = self.output_head(fused)
         
-        return abundances, ssa, log_var, abundance_log_var
+        # Domain adaptation output
+        domain_logits = self.domain_discriminator(fused)
+        
+        # Super-resolution output
+        hr_abundances, hr_ssa, _, _ = self.super_res_branch(fused)
+        
+        return abundances, ssa, log_var, abundance_log_var, domain_logits, hr_abundances, hr_ssa

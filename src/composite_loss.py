@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from physics_loss import HapkePhysicsLoss
 
 class CompositeLoss(nn.Module):
@@ -8,13 +9,15 @@ class CompositeLoss(nn.Module):
     Combines Data Loss (MSE + SAM), Physics Loss (Hapke residual), and Uncertainty Regularization.
     Uses Homoscedastic Uncertainty Weighting to balance the three terms dynamically.
     """
-    def __init__(self, endmember_ssas, init_s_data=0.0, init_s_physics=0.0, init_s_reg=0.0, init_s_abundance=0.0, phase_function_g=0.0):
+    def __init__(self, endmember_ssas, init_s_data=0.0, init_s_physics=0.0, init_s_reg=0.0, init_s_abundance=0.0, init_s_domain=0.0, init_s_sr=0.0, phase_function_g=0.0):
         super().__init__()
         # Learnable log-variance parameters for homoscedastic weighting of the tasks
         self.s_data = nn.Parameter(torch.tensor(init_s_data, dtype=torch.float32))
         self.s_physics = nn.Parameter(torch.tensor(init_s_physics, dtype=torch.float32))
         self.s_reg = nn.Parameter(torch.tensor(init_s_reg, dtype=torch.float32))
         self.s_abundance = nn.Parameter(torch.tensor(init_s_abundance, dtype=torch.float32))
+        self.s_domain = nn.Parameter(torch.tensor(init_s_domain, dtype=torch.float32))
+        self.s_sr = nn.Parameter(torch.tensor(init_s_sr, dtype=torch.float32))
         
         self.physics_module = HapkePhysicsLoss(endmember_ssas, phase_function_g=phase_function_g)
         self.mse = nn.MSELoss()
@@ -28,7 +31,7 @@ class CompositeLoss(nn.Module):
         cos_theta = torch.clamp(cos_theta, -1.0 + 1e-8, 1.0 - 1e-8)
         return torch.mean(torch.acos(cos_theta))
 
-    def forward(self, predicted_reflectance, observed_reflectance, predicted_abundances, log_var, abundance_log_var, mu0, mu, phase_angle, mask_labeled=None, observed_abundances=None, mask_abundances=None):
+    def forward(self, predicted_reflectance, observed_reflectance, predicted_abundances, log_var, abundance_log_var, mu0, mu, phase_angle, mask_labeled=None, observed_abundances=None, mask_abundances=None, domain_logits=None, domain_labels=None, hr_abundances=None, hr_ssa=None):
         """
         predicted_reflectance: (B, N_bands) or (B, N_bands, H, W)
         observed_reflectance: (B, N_bands) or (B, N_bands, H, W)
@@ -40,8 +43,13 @@ class CompositeLoss(nn.Module):
         mask_abundances: boolean mask indicating which pixels have observed abundances
         """
         # Flatten spatial dimensions if present
-        if predicted_reflectance.dim() == 4:
+        predicted_reflectance_orig_dim = predicted_reflectance.dim()
+        if predicted_reflectance_orig_dim == 4:
             B, C, H, W = predicted_reflectance.shape
+            observed_reflectance_orig = observed_reflectance
+            mu0_orig = mu0
+            mu_orig = mu
+            phase_angle_orig = phase_angle
             predicted_reflectance = predicted_reflectance.permute(0, 2, 3, 1).reshape(-1, C)
             observed_reflectance = observed_reflectance.permute(0, 2, 3, 1).reshape(-1, C)
             predicted_abundances = predicted_abundances.permute(0, 2, 3, 1).reshape(-1, predicted_abundances.shape[1])
@@ -60,6 +68,12 @@ class CompositeLoss(nn.Module):
                 mask_labeled = mask_labeled.view(-1)
             if mask_abundances is not None:
                 mask_abundances = mask_abundances.view(-1)
+            if domain_labels is not None and domain_labels.dim() == 1:
+                domain_labels_pixel = domain_labels.unsqueeze(1).unsqueeze(2).expand(B, H, W).reshape(-1)
+            else:
+                domain_labels_pixel = domain_labels
+        else:
+            domain_labels_pixel = domain_labels
         
         # 1. Data Loss (only on labeled pixels)
         if mask_labeled is not None and mask_labeled.any():
@@ -102,21 +116,61 @@ class CompositeLoss(nn.Module):
             mse_abund_per_pixel = (pred_abund_labeled - obs_abund_labeled)**2
             l_abundance = torch.mean(torch.exp(-abund_log_var_labeled) * mse_abund_per_pixel + abund_log_var_labeled)
         
-        # 5. Homoscedastic Task Weighting
+        # 5. Domain Adaptation & Domain-Specific Physics Consistency
+        l_domain = torch.tensor(0.0, device=predicted_reflectance.device)
+        if domain_logits is not None and domain_labels is not None:
+            l_domain = F.cross_entropy(domain_logits, domain_labels)
+            
+            # Domain-Specific Physics Consistency (variance of mean residuals across domains)
+            pixel_residuals = torch.mean((predicted_reflectance - hapke_ref)**2, dim=1)
+            domain_means = []
+            for d in torch.unique(domain_labels_pixel):
+                d_mask = (domain_labels_pixel == d)
+                if d_mask.any():
+                    domain_means.append(pixel_residuals[d_mask].mean())
+            if len(domain_means) > 1:
+                l_domain_physics = torch.var(torch.stack(domain_means))
+                l_domain = l_domain + 0.1 * l_domain_physics # Weight it slightly
+                
+        # 6. Super-Resolution Consistency
+        l_sr = torch.tensor(0.0, device=predicted_reflectance.device)
+        if hr_abundances is not None and hr_ssa is not None and predicted_reflectance_orig_dim == 4:
+            B_hr, C_a, H_hr, W_hr = hr_abundances.shape
+            hr_mu0 = mu0_orig.unsqueeze(1).unsqueeze(2).expand(B_hr, H_hr, W_hr).reshape(-1)
+            hr_mu = mu_orig.unsqueeze(1).unsqueeze(2).expand(B_hr, H_hr, W_hr).reshape(-1)
+            hr_phase = phase_angle_orig.unsqueeze(1).unsqueeze(2).expand(B_hr, H_hr, W_hr).reshape(-1)
+            
+            hr_abundances_flat = hr_abundances.permute(0, 2, 3, 1).reshape(-1, C_a)
+            dummy_ref = torch.zeros((B_hr * H_hr * W_hr, 1), device=predicted_reflectance.device)
+            _, hr_hapke_ref = self.physics_module(dummy_ref, hr_abundances_flat, hr_mu0, hr_mu, hr_phase)
+            
+            hr_hapke_ref_img = hr_hapke_ref.reshape(B_hr, H_hr, W_hr, -1).permute(0, 3, 1, 2)
+            lr_hapke_ref_img = F.adaptive_avg_pool2d(hr_hapke_ref_img, (H, W))
+            
+            l_sr = self.mse(lr_hapke_ref_img, observed_reflectance_orig)
+
+        # 7. Homoscedastic Task Weighting
         loss_data_weighted = torch.exp(-self.s_data) * l_data + self.s_data
         loss_physics_weighted = torch.exp(-self.s_physics) * l_physics + self.s_physics
         loss_reg_weighted = torch.exp(-self.s_reg) * l_reg + self.s_reg
         loss_abundance_weighted = torch.exp(-self.s_abundance) * l_abundance + self.s_abundance
+        loss_domain_weighted = torch.exp(-self.s_domain) * l_domain + self.s_domain
+        loss_sr_weighted = torch.exp(-self.s_sr) * l_sr + self.s_sr
         
-        total_loss = loss_data_weighted + loss_physics_weighted + loss_reg_weighted + loss_abundance_weighted
+        total_loss = loss_data_weighted + loss_physics_weighted + loss_reg_weighted + loss_abundance_weighted + loss_domain_weighted + loss_sr_weighted
+        
         
         return total_loss, {
             'l_data': l_data.item(),
             'l_physics': l_physics.item(),
             'l_reg': l_reg.item(),
-            'l_abundance': l_abundance.item(),
+            'l_abundance': l_abundance.item() if isinstance(l_abundance, torch.Tensor) else l_abundance,
+            'l_domain': l_domain.item() if isinstance(l_domain, torch.Tensor) else l_domain,
+            'l_sr': l_sr.item() if isinstance(l_sr, torch.Tensor) else l_sr,
             's_data': self.s_data.item(),
             's_physics': self.s_physics.item(),
             's_reg': self.s_reg.item(),
             's_abundance': self.s_abundance.item(),
+            's_domain': self.s_domain.item(),
+            's_sr': self.s_sr.item(),
         }

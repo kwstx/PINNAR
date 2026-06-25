@@ -87,6 +87,8 @@ class PINNTrainer:
             epoch_data_loss = 0.0
             epoch_physics_residual = 0.0
             epoch_smoothness = 0.0
+            epoch_domain_loss = 0.0
+            epoch_sr_loss = 0.0
             
             if epoch <= pretrain_epochs:
                 # Stage 1: Pre-train on abundant unlabeled spectra using ONLY the physics loss
@@ -98,7 +100,7 @@ class PINNTrainer:
                     mu = batch['mu'].to(self.device)
                     phase = batch['phase'].to(self.device)
                     
-                    abundances, ssa, log_var, abund_log_var = self.model(obs_ref)
+                    abundances, ssa, log_var, abund_log_var, _, _, _ = self.model(obs_ref)
                     
                     # Ensure we pass the predicted_reflectance (network output) rather than observed?
                     # The network outputs abundances, SSA. To get predicted reflectance, it's typically just observed passing through if it's an autoencoder,
@@ -140,7 +142,11 @@ class PINNTrainer:
                     mask_labeled = batch.get('mask_labeled', torch.ones(obs_ref.shape[0], dtype=torch.bool)).to(self.device)
                     mask_abundances = batch.get('mask_abundances', torch.ones(obs_ref.shape[0], dtype=torch.bool)).to(self.device)
                     
-                    abundances, ssa, log_var, abund_log_var = self.model(obs_ref)
+                    domain_labels = batch.get('domain_labels', None)
+                    if domain_labels is not None:
+                        domain_labels = domain_labels.to(self.device)
+                    
+                    abundances, ssa, log_var, abund_log_var, domain_logits, hr_abundances, hr_ssa = self.model(obs_ref)
                     
                     # Assuming the composite loss needs predicted reflectance, but the model doesn't predict it directly.
                     # We pass the input reflectance as predicted_reflectance since it's an auto-encoding setup where physics acts as decoder.
@@ -154,7 +160,11 @@ class PINNTrainer:
                         mu0=mu0, mu=mu, phase_angle=phase, 
                         mask_labeled=mask_labeled, 
                         observed_abundances=obs_abundances, 
-                        mask_abundances=mask_abundances
+                        mask_abundances=mask_abundances,
+                        domain_logits=domain_logits,
+                        domain_labels=domain_labels,
+                        hr_abundances=hr_abundances,
+                        hr_ssa=hr_ssa
                     )
                     
                     smoothness = compute_abundance_smoothness(abundances)
@@ -167,11 +177,13 @@ class PINNTrainer:
                     
                     self.optimizer.step()
                     
-                    epoch_data_loss += metrics['l_data']
-                    epoch_physics_residual += metrics['l_physics']
+                    epoch_data_loss += metrics.get('l_data', 0.0)
+                    epoch_physics_residual += metrics.get('l_physics', 0.0)
                     epoch_smoothness += smoothness.item()
+                    epoch_domain_loss += metrics.get('l_domain', 0.0)
+                    epoch_sr_loss += metrics.get('l_sr', 0.0)
                     
-                print(f"Data Loss: {epoch_data_loss/len(labeled_loader):.4f} | Physics Residual: {epoch_physics_residual/len(labeled_loader):.4f} | Smoothness: {epoch_smoothness/len(labeled_loader):.4f}")
+                print(f"Data: {epoch_data_loss/len(labeled_loader):.4f} | Phys: {epoch_physics_residual/len(labeled_loader):.4f} | Smooth: {epoch_smoothness/len(labeled_loader):.4f} | Dom: {epoch_domain_loss/len(labeled_loader):.4f} | SR: {epoch_sr_loss/len(labeled_loader):.4f}")
                 
             self.scheduler.step()
             
