@@ -4,3 +4,6 @@ numpy
 scipy
 h5py
 xarray
+
+rasterio
+plotly
