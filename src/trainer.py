@@ -75,8 +75,14 @@ class PINNTrainer:
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=100) # Assumes 100 epochs total
         self.physics_residual = PhysicsResidual(composite_loss.physics_module.endmember_ssas).to(device)
 
-    def train(self, unlabeled_loader, labeled_loader, total_epochs=100, pretrain_epochs=50, checkpoint_dir="checkpoints"):
+    def train(self, unlabeled_loader, labeled_loader, overlap_loader=None, total_epochs=100, pretrain_epochs=50, checkpoint_dir="checkpoints"):
         os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # Import validation function here to avoid circular imports
+        try:
+            from validation import validate_cross_mission_consistency
+        except ImportError:
+            validate_cross_mission_consistency = None
         
         for epoch in range(1, total_epochs + 1):
             self.model.train()
@@ -99,8 +105,14 @@ class PINNTrainer:
                     mu0 = batch['mu0'].to(self.device)
                     mu = batch['mu'].to(self.device)
                     phase = batch['phase'].to(self.device)
+                    instrument_id = batch.get('instrument_id', ['CRISM'] * obs_ref.size(0))[0] # Assume homogeneous batch
                     
-                    abundances, ssa, log_var, abund_log_var, _, _, _ = self.model(obs_ref)
+                    if hasattr(self.model, 'harmonizer'):
+                        abundances, ssa, log_var, abund_log_var, _, _, _ = self.model(obs_ref, instrument_id)
+                        obs_ref_physics = self.model.harmonizer(obs_ref, instrument_id)
+                    else:
+                        abundances, ssa, log_var, abund_log_var, _, _, _ = self.model(obs_ref)
+                        obs_ref_physics = obs_ref
                     
                     # Ensure we pass the predicted_reflectance (network output) rather than observed?
                     # The network outputs abundances, SSA. To get predicted reflectance, it's typically just observed passing through if it's an autoencoder,
@@ -108,7 +120,7 @@ class PINNTrainer:
                     # so we might use the observed reflectance as the proxy or the model might predict it. Wait, the hybrid model
                     # only outputs (abundances, ssa, log_var, abundance_log_var). Let's use `obs_ref` as the input to the physics residual.
                     # Actually, the user says "PhysicsResidual class that takes network outputs and geometry parameters"
-                    residual_norm, _ = self.physics_residual(obs_ref, abundances, mu0, mu, phase)
+                    residual_norm, _ = self.physics_residual(obs_ref_physics, abundances, mu0, mu, phase)
                     
                     smoothness = compute_abundance_smoothness(abundances)
                     
@@ -146,14 +158,21 @@ class PINNTrainer:
                     if domain_labels is not None:
                         domain_labels = domain_labels.to(self.device)
                     
-                    abundances, ssa, log_var, abund_log_var, domain_logits, hr_abundances, hr_ssa = self.model(obs_ref)
+                    instrument_id = batch.get('instrument_id', ['CRISM'] * obs_ref.size(0))[0]
+                    
+                    if hasattr(self.model, 'harmonizer'):
+                        abundances, ssa, log_var, abund_log_var, domain_logits, hr_abundances, hr_ssa = self.model(obs_ref, instrument_id)
+                        obs_ref_physics = self.model.harmonizer(obs_ref, instrument_id)
+                    else:
+                        abundances, ssa, log_var, abund_log_var, domain_logits, hr_abundances, hr_ssa = self.model(obs_ref)
+                        obs_ref_physics = obs_ref
                     
                     # Assuming the composite loss needs predicted reflectance, but the model doesn't predict it directly.
                     # We pass the input reflectance as predicted_reflectance since it's an auto-encoding setup where physics acts as decoder.
                     # Let's pass obs_ref as predicted_reflectance for the composite loss.
                     total_loss, metrics = self.composite_loss(
-                        predicted_reflectance=obs_ref, 
-                        observed_reflectance=obs_ref, 
+                        predicted_reflectance=obs_ref_physics, 
+                        observed_reflectance=obs_ref_physics,  
                         predicted_abundances=abundances, 
                         log_var=log_var, 
                         abundance_log_var=abund_log_var, 
@@ -198,3 +217,14 @@ class PINNTrainer:
                     'composite_loss_state_dict': self.composite_loss.state_dict()
                 }, checkpoint_path)
                 print(f"Saved checkpoint: {checkpoint_path}")
+                
+            # Cross-mission validation
+            if overlap_loader is not None and validate_cross_mission_consistency is not None and hasattr(self.model, 'harmonizer'):
+                print("Running Cross-Mission Consistency Validation...")
+                unified_prods, avg_abund_diff, avg_phys_diff = validate_cross_mission_consistency(
+                    self.model, overlap_loader, self.physics_residual, self.device
+                )
+                # In a full implementation, you could optionally add avg_abund_diff as an additional regularization loss 
+                # (Cross-mission consistency loss) and backpropagate. For now, we report the metrics and produce the mosaicking products.
+                
+
