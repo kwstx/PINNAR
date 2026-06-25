@@ -9,8 +9,11 @@ class CompositeLoss(nn.Module):
     Combines Data Loss (MSE + SAM), Physics Loss (Hapke residual), and Uncertainty Regularization.
     Uses Homoscedastic Uncertainty Weighting to balance the three terms dynamically.
     """
-    def __init__(self, endmember_ssas, init_s_data=0.0, init_s_physics=0.0, init_s_reg=0.0, init_s_abundance=0.0, init_s_domain=0.0, init_s_sr=0.0, phase_function_g=0.0):
+    def __init__(self, endmember_ssas, init_s_data=0.0, init_s_physics=0.0, init_s_reg=0.0, init_s_abundance=0.0, init_s_domain=0.0, init_s_sr=0.0, phase_function_g=0.0, use_physics_loss=True, use_uncertainty_reg=True, use_domain_adapt=True):
         super().__init__()
+        self.use_physics_loss = use_physics_loss
+        self.use_uncertainty_reg = use_uncertainty_reg
+        self.use_domain_adapt = use_domain_adapt
         # Learnable log-variance parameters for homoscedastic weighting of the tasks
         self.s_data = nn.Parameter(torch.tensor(init_s_data, dtype=torch.float32))
         self.s_physics = nn.Parameter(torch.tensor(init_s_physics, dtype=torch.float32))
@@ -65,9 +68,15 @@ class CompositeLoss(nn.Module):
                 phase_angle = phase_angle.unsqueeze(1).unsqueeze(2).expand(B, H, W).reshape(-1)
             
             if mask_labeled is not None:
-                mask_labeled = mask_labeled.view(-1)
+                if mask_labeled.dim() == 1:
+                    mask_labeled = mask_labeled.unsqueeze(1).unsqueeze(2).expand(B, H, W).reshape(-1)
+                else:
+                    mask_labeled = mask_labeled.view(-1)
             if mask_abundances is not None:
-                mask_abundances = mask_abundances.view(-1)
+                if mask_abundances.dim() == 1:
+                    mask_abundances = mask_abundances.unsqueeze(1).unsqueeze(2).expand(B, H, W).reshape(-1)
+                else:
+                    mask_abundances = mask_abundances.view(-1)
             if domain_labels is not None and domain_labels.dim() == 1:
                 domain_labels_pixel = domain_labels.unsqueeze(1).unsqueeze(2).expand(B, H, W).reshape(-1)
             else:
@@ -90,20 +99,22 @@ class CompositeLoss(nn.Module):
             mask_labeled = torch.ones(predicted_reflectance.shape[0], dtype=torch.bool, device=predicted_reflectance.device)
 
         # 2. Physics Loss (on all pixels)
-        # We only need the hapke reflectance, not the full loss from the physics module
-        # So we pass 0.0 for lambdas to avoid unused computation if possible, but actually we can just extract hapke_ref
-        _, hapke_ref = self.physics_module(predicted_reflectance, predicted_abundances, mu0, mu, phase_angle)
-        l_physics = self.mse(predicted_reflectance, hapke_ref)
+        l_physics = torch.tensor(0.0, device=predicted_reflectance.device)
+        hapke_ref = predicted_reflectance # default
+        if self.use_physics_loss:
+            _, hapke_ref = self.physics_module(predicted_reflectance, predicted_abundances, mu0, mu, phase_angle)
+            l_physics = self.mse(predicted_reflectance, hapke_ref)
         
         # 3. Uncertainty-aware Regularization
         # Heteroscedastic formulation: exp(-log_var) * MSE + log_var
-        # Computed per pixel on labeled data (or all data against physics if unlabeled, but let's use labeled data)
-        pred_labeled_reg = predicted_reflectance[mask_labeled]
-        obs_labeled_reg = observed_reflectance[mask_labeled]
-        log_var_labeled = log_var[mask_labeled]
-        
-        mse_per_pixel = torch.mean((pred_labeled_reg - obs_labeled_reg)**2, dim=1, keepdim=True)
-        l_reg = torch.mean(torch.exp(-log_var_labeled) * mse_per_pixel + log_var_labeled)
+        l_reg = torch.tensor(0.0, device=predicted_reflectance.device)
+        if self.use_uncertainty_reg:
+            pred_labeled_reg = predicted_reflectance[mask_labeled]
+            obs_labeled_reg = observed_reflectance[mask_labeled]
+            log_var_labeled = log_var[mask_labeled]
+            
+            mse_per_pixel = torch.mean((pred_labeled_reg - obs_labeled_reg)**2, dim=1, keepdim=True)
+            l_reg = torch.mean(torch.exp(-log_var_labeled) * mse_per_pixel + log_var_labeled)
         
         # 4. Supervised Abundance Loss (Aleatoric NLL) on pixels with known mineralogy
         l_abundance = torch.tensor(0.0, device=predicted_reflectance.device)
@@ -118,19 +129,20 @@ class CompositeLoss(nn.Module):
         
         # 5. Domain Adaptation & Domain-Specific Physics Consistency
         l_domain = torch.tensor(0.0, device=predicted_reflectance.device)
-        if domain_logits is not None and domain_labels is not None:
+        if self.use_domain_adapt and domain_logits is not None and domain_labels is not None:
             l_domain = F.cross_entropy(domain_logits, domain_labels)
             
             # Domain-Specific Physics Consistency (variance of mean residuals across domains)
-            pixel_residuals = torch.mean((predicted_reflectance - hapke_ref)**2, dim=1)
-            domain_means = []
-            for d in torch.unique(domain_labels_pixel):
-                d_mask = (domain_labels_pixel == d)
-                if d_mask.any():
-                    domain_means.append(pixel_residuals[d_mask].mean())
-            if len(domain_means) > 1:
-                l_domain_physics = torch.var(torch.stack(domain_means))
-                l_domain = l_domain + 0.1 * l_domain_physics # Weight it slightly
+            if self.use_physics_loss:
+                pixel_residuals = torch.mean((predicted_reflectance - hapke_ref)**2, dim=1)
+                domain_means = []
+                for d in torch.unique(domain_labels_pixel):
+                    d_mask = (domain_labels_pixel == d)
+                    if d_mask.any():
+                        domain_means.append(pixel_residuals[d_mask].mean())
+                if len(domain_means) > 1:
+                    l_domain_physics = torch.var(torch.stack(domain_means))
+                    l_domain = l_domain + 0.1 * l_domain_physics # Weight it slightly
                 
         # 6. Super-Resolution Consistency
         l_sr = torch.tensor(0.0, device=predicted_reflectance.device)

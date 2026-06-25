@@ -1,6 +1,8 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 class MockOverlappingDataset(Dataset):
     """
@@ -146,3 +148,62 @@ if __name__ == "__main__":
     
     unified_products, _, _ = validate_cross_mission_consistency(model, dataloader, physics_res, device=device)
     print(f"Generated {len(unified_products)} batches of unified products ready for mosaicking.")
+
+def compute_rmse(predicted, target):
+    """Computes Root-Mean-Square Error between predicted and target tensors."""
+    return torch.sqrt(torch.mean((predicted - target)**2)).item()
+
+def compute_spectral_angle(predicted, target):
+    """Computes average Spectral Angle Mapper (SAM) across the dataset."""
+    dot_product = torch.sum(predicted * target, dim=-1)
+    norm_pred = torch.norm(predicted, dim=-1)
+    norm_target = torch.norm(target, dim=-1)
+    
+    cos_theta = dot_product / (norm_pred * norm_target + 1e-8)
+    cos_theta = torch.clamp(cos_theta, -1.0 + 1e-8, 1.0 - 1e-8)
+    return torch.mean(torch.acos(cos_theta)).item()
+
+def compute_mae_per_endmember(predicted_abundances, target_abundances):
+    """Computes Mean Absolute Error per endmember."""
+    # Assumes shape (N, num_endmembers)
+    mae = torch.mean(torch.abs(predicted_abundances - target_abundances), dim=0)
+    return mae.cpu().numpy()
+
+def compute_ece(predictions, targets, uncertainties, num_bins=10):
+    """
+    Computes Expected Calibration Error (ECE).
+    uncertainties should be the predictive standard deviation.
+    """
+    errors = torch.abs(predictions - targets).detach().cpu().numpy()
+    uncertainties = uncertainties.detach().cpu().numpy()
+    
+    bins = np.linspace(0, np.max(uncertainties), num_bins + 1)
+    ece = 0.0
+    total_samples = len(errors)
+    
+    bin_means = []
+    bin_errs = []
+    
+    for i in range(num_bins):
+        mask = (uncertainties >= bins[i]) & (uncertainties < bins[i+1])
+        if np.sum(mask) > 0:
+            bin_err = np.mean(errors[mask])
+            bin_unc = np.mean(uncertainties[mask])
+            bin_means.append(bin_unc)
+            bin_errs.append(bin_err)
+            ece += (np.sum(mask) / total_samples) * np.abs(bin_err - bin_unc)
+            
+    return ece, bin_means, bin_errs
+
+def plot_calibration_curve(bin_means, bin_errs, save_path="calibration_plot.png"):
+    """Generates and saves a reliability diagram for uncertainty estimates."""
+    plt.figure(figsize=(8, 6))
+    plt.plot([0, max(bin_means + bin_errs)], [0, max(bin_means + bin_errs)], 'k--', label="Perfect Calibration")
+    plt.plot(bin_means, bin_errs, marker='o', linestyle='-', label="Model Calibration")
+    plt.xlabel("Predictive Uncertainty (Std Dev)")
+    plt.ylabel("Empirical Error (MAE)")
+    plt.title("Reliability Diagram")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.close()
