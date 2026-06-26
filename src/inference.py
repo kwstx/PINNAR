@@ -38,6 +38,17 @@ def generate_abundance_map(tensor_data, output_path):
     rgb = (rgb * 255).astype(np.uint8)
     
     img = Image.fromarray(rgb)
+    
+    # Scale up thin strips to be at least 256 pixels on the shortest side
+    # to make them legible in the UI, preserving aspect ratio and retro pixelation.
+    width, height = img.size
+    min_dim = min(width, height)
+    if min_dim < 256:
+        scale_factor = 256 / min_dim
+        new_width = int(width * scale_factor)
+        new_height = int(height * scale_factor)
+        img = img.resize((new_width, new_height), Image.NEAREST)
+        
     img.save(output_path)
     return True
 
