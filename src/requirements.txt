@@ -5,7 +5,7 @@ scipy
 h5py
 xarray
 
-rasterio
+# rasterio  # disabled due to GDAL dependency
 plotly
 SALib
 jupyter

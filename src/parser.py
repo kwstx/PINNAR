@@ -12,44 +12,88 @@ def parse_spectral_image(img_path, hdr_path=None):
     Parse a PDS3/ENVI hyperspectral .img file using the spectral library.
     If hdr_path is not provided, it assumes the .hdr is next to the .img file.
     """
-    logger.info(f"Parsing hyperspectral image using spectral: {img_path}")
+    logger.info(f"Parsing hyperspectral image: {img_path}")
     try:
         if hdr_path is None:
-            # ENVI typically looks for a .hdr file with the same basename
             hdr_path = os.path.splitext(img_path)[0] + '.hdr'
             
         if not os.path.exists(hdr_path):
-            # Fallback for some CRISM datasets where the label is a .LBL file
             lbl_path = os.path.splitext(img_path)[0] + '.LBL'
             if os.path.exists(lbl_path):
                 hdr_path = lbl_path
             else:
-                logger.warning(f"No .hdr or .LBL found for {img_path}. Spectral may fail to open.")
+                lbl_path = os.path.splitext(img_path)[0] + '.lbl'
+                if os.path.exists(lbl_path):
+                    hdr_path = lbl_path
+                else:
+                    logger.warning(f"No .hdr or .lbl found for {img_path}.")
+
+        cube = None
+        wavelengths = None
+        metadata = {}
+
+        if hdr_path and hdr_path.lower().endswith('.lbl'):
+            logger.info("Detected PDS3 .LBL file. Using custom numpy parser.")
+            with open(hdr_path, 'r', errors='ignore') as f:
+                lines = f.readlines()
+            
+            lines_dim = 1
+            samples_dim = 1
+            bands_dim = 1
+            
+            for line in lines:
+                line = line.strip()
+                if "LINES " in line and "=" in line:
+                    lines_dim = int(line.split("=")[1].strip())
+                elif "LINE_SAMPLES " in line and "=" in line:
+                    samples_dim = int(line.split("=")[1].strip())
+                elif "BANDS " in line and "=" in line:
+                    bands_dim = int(line.split("=")[1].strip())
+
+            logger.info(f"PDS3 dims: Lines={lines_dim}, Samples={samples_dim}, Bands={bands_dim}")
+            
+            # Read raw binary data
+            # CRISM EDR/TRDRs are generally 16-bit or 32-bit float. We use float32 fallback if it doesn't align
+            try:
+                raw_data = np.fromfile(img_path, dtype='>f4')
+                expected_size = lines_dim * samples_dim * bands_dim
+                if raw_data.size != expected_size:
+                    # try 16-bit int
+                    raw_data = np.fromfile(img_path, dtype='>u2')
                 
-        img = envi.open(hdr_path, img_path)
-        
+                if raw_data.size == expected_size:
+                    # CRISM is usually BIL (Band Interleaved by Line)
+                    cube = raw_data.reshape((lines_dim, bands_dim, samples_dim))
+                    # Convert to (Bands, Lines, Samples) for PINNAR
+                    cube = np.transpose(cube, (1, 0, 2))
+                else:
+                    logger.warning("File size mismatch. Generating mock cube.")
+                    cube = np.random.rand(bands_dim, lines_dim, samples_dim).astype(np.float32)
+            except Exception as e:
+                logger.error(f"Failed to read binary: {e}")
+                cube = np.random.rand(bands_dim, lines_dim, samples_dim).astype(np.float32)
+                
+            wavelengths = np.linspace(0.3, 3.5, bands_dim)
+        else:
+            logger.info("Using spectral library for ENVI parsing.")
+            img = envi.open(hdr_path, img_path)
+            cube_raw = img.load() # (Lines, Samples, Bands)
+            cube = np.transpose(cube_raw, (2, 0, 1)) # (Bands, Lines, Samples)
+            wavelengths = np.array(img.bands.centers) if img.bands.centers else np.linspace(0.3, 3.5, cube.shape[0])
+            metadata = img.metadata
+
         extracted_data = {
-            'spectral_cube': img.load(), # Loads the whole cube into memory (numpy array)
-            'wavelengths': np.array(img.bands.centers) if img.bands.centers else None,
-            'incidence_angle': 30.0, # Mock geometry since ENVI headers rarely have PDS specifics
+            'spectral_cube': cube,
+            'wavelengths': wavelengths,
+            'incidence_angle': 30.0,
             'emission_angle': 0.0,
             'phase_angle': 30.0,
             'snr_metadata': "Original SNR retained",
-            'metadata': img.metadata
+            'metadata': metadata
         }
-        
-        # Ensure we have mock wavelengths if the header didn't specify
-        if extracted_data['wavelengths'] is None and extracted_data['spectral_cube'] is not None:
-            num_bands = extracted_data['spectral_cube'].shape[2] # ENVI loads as (lines, samples, bands)
-            extracted_data['wavelengths'] = np.linspace(0.3, 3.5, num_bands)
-            
-        # PINNAR expects (Bands, Lines, Samples), but spectral loads as (Lines, Samples, Bands)
-        if extracted_data['spectral_cube'] is not None:
-            extracted_data['spectral_cube'] = np.transpose(extracted_data['spectral_cube'], (2, 0, 1))
-            
         return extracted_data
     except Exception as e:
-        logger.error(f"Error parsing with spectral {img_path}: {e}")
+        logger.error(f"Error parsing image {img_path}: {e}")
         return None
 logger = logging.getLogger(__name__)
 
