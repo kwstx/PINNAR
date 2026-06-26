@@ -18,7 +18,7 @@ def query_ode_api_by_id(product_id):
     params = {
         "query": "product",
         "results": "f", # return file information
-        "pt": product_id, # Product ID search
+        "productid": product_id, # Product ID search
         "output": "JSON"
     }
     
@@ -33,7 +33,8 @@ def query_ode_api_by_id(product_id):
             
         file_urls = []
         for prod in products:
-            files = prod.get('Product_Files', {}).get('Product_File', [])
+            files_obj = prod.get('Product_files') or prod.get('Product_Files') or {}
+            files = files_obj.get('Product_file') or files_obj.get('Product_File') or []
             if not isinstance(files, list):
                 files = [files]
             for file_info in files:
