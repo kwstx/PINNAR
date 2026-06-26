@@ -7,3 +7,10 @@ xarray
 
 rasterio
 plotly
+SALib
+jupyter
+torch
+torchvision
+matplotlib
+spectral
+Pillow

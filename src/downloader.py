@@ -5,7 +5,45 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+NASA_API_KEY = "PLgY6eoT6Au5l9wY7uxwr7Fr8ReoqQP41wWvlLa2"
 PDS_API_URL = "https://pds.nasa.gov/api/search/1.1/products"
+ODE_API_URL = "https://oderest.rsl.wustl.edu/live2/"
+
+def query_ode_api_by_id(product_id):
+    """
+    Query the Mars ODE REST API for a specific product ID (e.g., FRT0000A0A5).
+    Returns a list of dictionaries with direct download URLs for .IMG and .LBL files.
+    """
+    logger.info(f"Querying ODE API for Product ID: {product_id}")
+    params = {
+        "query": "product",
+        "results": "f", # return file information
+        "pt": product_id, # Product ID search
+        "output": "JSON"
+    }
+    
+    try:
+        response = requests.get(ODE_API_URL, params=params, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        
+        products = data.get('ODEResults', {}).get('Products', {}).get('Product', [])
+        if not isinstance(products, list):
+            products = [products]
+            
+        file_urls = []
+        for prod in products:
+            files = prod.get('Product_Files', {}).get('Product_File', [])
+            if not isinstance(files, list):
+                files = [files]
+            for file_info in files:
+                file_url = file_info.get('URL')
+                if file_url:
+                    file_urls.append(file_url)
+        return file_urls
+    except Exception as e:
+        logger.error(f"Failed to query ODE API for {product_id}: {e}")
+        return []
 
 def query_pds_sample(mission, max_results=1):
     """
@@ -17,7 +55,8 @@ def query_pds_sample(mission, max_results=1):
     # (instrument, processing level) are required based on PDS4 standard dictionary.
     params = {
         "q": f"instrument_name eq '{mission}'", # Simplified query
-        "limit": max_results
+        "limit": max_results,
+        "api_key": NASA_API_KEY
     }
     
     # Note: PDS API specifics might require different parameter names 

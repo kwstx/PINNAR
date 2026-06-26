@@ -1,0 +1,119 @@
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  height: 100vh;
+  gap: 2rem;
+  text-shadow: 0 0 5px var(--term-green-glow);
+}
+
+.ascii-header {
+  white-space: pre;
+  font-size: 1rem;
+  line-height: 1;
+  margin-bottom: 1rem;
+}
+
+.panel {
+  border: 2px dashed var(--term-green-dim);
+  padding: 1.5rem;
+  background: transparent;
+}
+
+.search-form {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.terminal-input {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--term-green);
+  color: var(--term-green);
+  font-size: 1.5rem;
+  padding: 0.5rem;
+  outline: none;
+  width: 300px;
+}
+
+.terminal-input:focus {
+  background: rgba(0, 255, 65, 0.1);
+}
+
+.terminal-btn {
+  background: transparent;
+  border: 2px solid var(--term-green);
+  color: var(--term-green);
+  padding: 0.5rem 1rem;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.terminal-btn:hover:not(:disabled) {
+  background: var(--term-green);
+  color: var(--term-bg);
+}
+
+.terminal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-style: dotted;
+}
+
+.layout-grid {
+  display: grid;
+  grid-template-columns: 350px 1fr;
+  gap: 2rem;
+  flex: 1;
+  overflow: hidden;
+}
+
+.log-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+  padding-right: 1rem;
+}
+
+.log-entry {
+  display: flex;
+  gap: 1rem;
+}
+
+.log-time {
+  color: var(--term-green-dim);
+}
+
+.map-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--term-green-dim);
+  height: 100%;
+  position: relative;
+}
+
+.map-container img {
+  max-width: 90%;
+  max-height: 90%;
+  filter: sepia(100%) hue-rotate(80deg) saturate(400%) contrast(1.5);
+}
+
+.blink {
+  animation: blink-anim 1s step-end infinite;
+}
+
+@keyframes blink-anim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.error-text {
+  color: #ff3333;
+  text-shadow: 0 0 5px rgba(255, 51, 51, 0.5);
+}

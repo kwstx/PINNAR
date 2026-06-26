@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+:root {
+  --term-bg: #000000;
+  --term-green: #00ff41;
+  --term-green-dim: #008f11;
+  --term-green-glow: rgba(0, 255, 65, 0.4);
+  --term-font: 'VT323', 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--term-bg);
+  color: var(--term-green);
+  font-family: var(--term-font);
+  font-size: 1.2rem;
+  line-height: 1.2;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+}
+
+/* CRT Scanline Effect */
+body::after {
+  content: " ";
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.25) 50%
+  );
+  background-size: 100% 4px;
+  z-index: 999;
+  pointer-events: none;
+}
+
+h1, h2, h3, input, button {
+  font-family: var(--term-font);
+  color: var(--term-green);
+  text-transform: uppercase;
+}
+
+::selection {
+  background: var(--term-green);
+  color: var(--term-bg);
+}
