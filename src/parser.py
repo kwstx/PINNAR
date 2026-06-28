@@ -57,17 +57,22 @@ def parse_spectral_image(img_path, hdr_path=None):
             try:
                 raw_data = np.fromfile(img_path, dtype='>f4')
                 expected_size = lines_dim * samples_dim * bands_dim
-                if raw_data.size != expected_size:
-                    # try 16-bit int
+                
+                # CRISM uses float32 or uint16. Test uint16 if float32 size is completely off
+                if raw_data.size < expected_size:
                     raw_data = np.fromfile(img_path, dtype='>u2')
                 
-                if raw_data.size == expected_size:
+                if raw_data.size >= expected_size:
+                    # Truncate any extra padding or trailing records
+                    raw_data = raw_data[:expected_size]
                     # CRISM is usually BIL (Band Interleaved by Line)
                     cube = raw_data.reshape((lines_dim, bands_dim, samples_dim))
                     # Convert to (Bands, Lines, Samples) for PINNAR
                     cube = np.transpose(cube, (1, 0, 2))
+                    # PyTorch does not support big-endian arrays; cast to native float32
+                    cube = cube.astype(np.float32)
                 else:
-                    logger.warning("File size mismatch. Generating mock cube.")
+                    logger.warning("File size too small. Generating mock cube.")
                     cube = np.random.rand(bands_dim, lines_dim, samples_dim).astype(np.float32)
             except Exception as e:
                 logger.error(f"Failed to read binary: {e}")
