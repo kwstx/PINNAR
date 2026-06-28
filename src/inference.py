@@ -69,8 +69,16 @@ def run_inference(product_id, output_dir):
         result["message"] = "No files found for this product ID on ODE API."
         return result
 
-    img_url = next((u for u in file_urls if u.endswith('.IMG') or u.endswith('.img')), None)
-    lbl_url = next((u for u in file_urls if u.endswith('.LBL') or u.endswith('.lbl')), None)
+    # Filter out browse products and find the actual data files
+    data_urls = [u for u in file_urls if '/browse/' not in u.lower()]
+    
+    img_url = next((u for u in data_urls if u.lower().endswith('.img') and product_id.lower() in u.lower()), None)
+    if not img_url:
+        img_url = next((u for u in data_urls if u.lower().endswith('.img')), None)
+        
+    lbl_url = next((u for u in data_urls if u.lower().endswith('.lbl') and product_id.lower() in u.lower()), None)
+    if not lbl_url:
+        lbl_url = next((u for u in data_urls if u.lower().endswith('.lbl')), None)
     
     if not img_url:
         result["status"] = "error"

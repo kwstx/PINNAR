@@ -86,14 +86,21 @@ def download_file(url, output_dir="data"):
     os.makedirs(output_dir, exist_ok=True)
     filename = url.split('/')[-1]
     filepath = os.path.join(output_dir, filename)
-    
-    if os.path.exists(filepath):
-        logger.info(f"File {filepath} already exists. Skipping download.")
-        return filepath
-
-    logger.info(f"Downloading {url} to {filepath}...")
     try:
-        with requests.get(url, stream=True, timeout=30) as r:
+        # Check remote file size first
+        response = requests.head(url, allow_redirects=True)
+        remote_size = int(response.headers.get('content-length', 0))
+        
+        if os.path.exists(filepath):
+            local_size = os.path.getsize(filepath)
+            if remote_size > 0 and local_size == remote_size:
+                logger.info(f"File {filepath} already exists and is complete. Skipping download.")
+                return filepath
+            else:
+                logger.info(f"File {filepath} exists but size mismatch (Local: {local_size}, Remote: {remote_size}). Re-downloading.")
+        
+        logger.info(f"Downloading {url} to {filepath}...")
+        with requests.get(url, stream=True, timeout=600) as r:
             r.raise_for_status()
             with open(filepath, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
