@@ -18,7 +18,7 @@ def query_ode_api_by_id(product_id):
     params = {
         "query": "product",
         "results": "f", # return file information
-        "productid": product_id, # Product ID search
+        "pdsid": f"*{product_id}*", # Product ID search using wildcards
         "output": "JSON"
     }
     

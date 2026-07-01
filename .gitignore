@@ -22,4 +22,5 @@ Thumbs.db
 
 # App outputs and downloaded data
 server/public/outputs/
+data/
 

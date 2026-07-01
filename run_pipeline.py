@@ -1,25 +1,64 @@
+import os
 import argparse
 import sys
 from src.sensitivity_analysis import run_sobol_analysis, run_hyperparameter_sweep
-from src.trainer import PreTrainer, FineTuner
-from src.hybrid_model import SpatialSpectralAbundanceModel
+from src.trainer import PINNTrainer
+from src.hybrid_model import HybridSpectralSpatialModel
 import torch
+
+from torch.utils.data import DataLoader
+from src.dataset import CRISMDataset, LabeledCRISMDataset
+from src.composite_loss import CompositeLoss
+from src.physics_loss import HapkePhysicsLoss
 
 def train_model(args):
     print("Starting training pipeline...")
-    # Mock parameters
-    endmember_ssas = torch.rand(5, 50)  # 5 endmembers, 50 bands
-    model = SpatialSpectralAbundanceModel(num_bands=50, num_endmembers=5)
     
-    if args.stage == 'pretrain' or args.stage == 'both':
-        print("Running pre-training...")
-        # pretrainer = PreTrainer(model, ...)
-        print("Pre-training completed (mock).")
+    # Check if train_ids.txt exists, else use dummy FRS0005AA3B
+    if os.path.exists('train_ids.txt'):
+        with open('train_ids.txt', 'r') as f:
+            train_ids = [line.strip() for line in f.readlines() if line.strip()]
+    else:
+        train_ids = ['FRS0005AA3B']
         
-    if args.stage == 'finetune' or args.stage == 'both':
-        print("Running fine-tuning...")
-        # finetuner = FineTuner(model, ...)
-        print("Fine-tuning completed (mock).")
+    print(f"Loaded {len(train_ids)} product IDs for training.")
+    
+    # Initialize DataLoaders
+    unlabeled_dataset = CRISMDataset(product_ids=train_ids)
+    labeled_dataset = LabeledCRISMDataset(product_ids=train_ids, labels_csv='labels.csv')
+    
+    # Set batch_size=1 since our patches are large (32x32)
+    unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=1, shuffle=True)
+    labeled_loader = DataLoader(labeled_dataset, batch_size=1, shuffle=True)
+    
+    # Get dynamic number of bands from the actual parsed data
+    sample_item = unlabeled_dataset[0]
+    num_bands = sample_item['reflectance'].shape[0]
+    num_endmembers = 5
+    print(f"Initialized model with {num_bands} bands.")
+    model = HybridSpectralSpatialModel(num_bands=num_bands, num_endmembers=num_endmembers)
+    
+    # Initialize random endmember SSAs (simulate lab data)
+    endmember_ssas = torch.rand(num_endmembers, num_bands)
+    composite_loss = CompositeLoss(endmember_ssas)
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if args.stage in ['pretrain', 'finetune', 'both']:
+        # We use PINNTrainer from trainer.py
+        from src.trainer import PINNTrainer
+        trainer = PINNTrainer(model, composite_loss, device=device)
+        
+        pretrain_epochs = 2 if args.stage in ['pretrain', 'both'] else 0
+        total_epochs = 4 if args.stage in ['finetune', 'both'] else pretrain_epochs
+        
+        print(f"Running on device: {device}")
+        trainer.train(
+            unlabeled_loader=unlabeled_loader, 
+            labeled_loader=labeled_loader, 
+            total_epochs=total_epochs, 
+            pretrain_epochs=pretrain_epochs
+        )
         
     print("Training pipeline finished.")
 

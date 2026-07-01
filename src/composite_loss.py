@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from physics_loss import HapkePhysicsLoss
+from src.physics_loss import HapkePhysicsLoss
 
 class CompositeLoss(nn.Module):
     """
